@@ -1,0 +1,212 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Day1: FastAPI + PostgreSQL + Redis 基础框架",
+      "spec": "搭建 GEO 工具平台后端骨架：\n1. 初始化 Python 3.11 FastAPI 项目，目录：backend/main.py、routers/、core/、models/、schemas/、db.py\n2. SQLAlchemy 连接 PostgreSQL，db.py 提供 get_db() 依赖\n3. 创建全部数据库表（users/entities/geo_pages/detect_records/page_chunks/crawl_jobs/crawl_pages），启用 pgvector\n4. 集成 Redis（redis-py），提供 get_redis() 依赖\n5. JWT 鉴权：POST /api/auth/register、POST /api/auth/login、GET /api/auth/me，密码 bcrypt，JWT 24h\n6. GET /health：返回 {status,db,redis} 均为 ok\n7. 生产配置：关闭 /docs，gunicorn+uvicorn workers 启动脚本\n8. backend/requirements.txt 包含所有依赖",
+      "test": "GET /health 返回 200 且 status/db/redis 均为 ok；POST /api/auth/register 可注册用户；POST /api/auth/login 返回 token；GET /api/auth/me 用 token 能取到当前用户信息",
+      "verifyCmd": "cd backend && pip install -r requirements.txt -q && python -c \"from main import app; print('ok')\"",
+      "dependsOn": [],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "Day2: JSON-LD 生成引擎（5 类实体模板）",
+      "spec": "实现 core/jsonld.py：\n1. 支持 Product / FAQPage / Article / HowTo / Organization 五类 Schema.org 模板\n2. render(entity_type, fields) -> str，返回完整 <script type='application/ld+json'>...</script>\n3. 每类模板必填字段校验（Pydantic），缺字段抛 ValueError\n4. JSON-LD 内容合法，@context 为 https://schema.org\n5. POST /api/geo/template：返回指定类型的字段定义（前端渲染表单用）\n6. tests/test_jsonld.py：覆盖 5 类实体生成与合法性断言",
+      "test": "render('Product', {...}) 输出含 @type:Product 的合法 JSON-LD script 标签；render('FAQPage', {questions:[{q,a}]}) 输出含 mainEntity 数组；缺必填字段时抛出异常；5 类均能生成不报错",
+      "verifyCmd": "cd backend && python -m pytest tests/test_jsonld.py -q",
+      "dependsOn": [
+        1
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "title": "Day3: NER 实体识别 + 静态 HTML 页面生成",
+      "spec": "实现 core/ner.py 和 core/page_generator.py：\n\ncore/ner.py：\n- spaCy zh_core_web_sm + jieba 分词\n- extract(text) -> {brands, products, params, numbers}\n- 数值+单位正则兜底（价格/重量/尺寸）\n\ncore/page_generator.py：\n- Jinja2 模板渲染纯静态 HTML（backend/templates/geo_page.html）\n- 包含 JSON-LD script、<article>/<section>/<dl> 语义标签、FAQ dl、参数 table\n- JSON-LD 与页面可见内容严格同源（同一 fields 数据渲染）\n- build(entity_type, fields) -> str\n\n接口：\n- POST /api/geo/generate：调用 ner+jsonld+page_generator，存 geo_pages，返回 html+page_id\n- GET /api/geo/download/{id}：HTML 附件下载\n- GET /api/geo/pages：分页查询当前用户生成历史\n- DELETE /api/geo/pages/{id}：删除页面及其分片",
+      "test": "POST /api/geo/generate 返回含 JSON-LD script 标签的完整 HTML；HTML 中 JSON-LD 的 name 字段与页面 <h1> 一致；GET /api/geo/download/{id} 返回 Content-Disposition: attachment",
+      "verifyCmd": "cd backend && python -m pytest tests/test_page_generator.py tests/test_ner.py -q",
+      "dependsOn": [
+        2
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 4,
+      "title": "Day4: GEO 打分器（四维度，满分 100）",
+      "spec": "实现 core/scorer.py：\n\nGEOScorer.score(html: str) -> ScoreResult\nScoreResult: total / structure / entity / semantic / freshness / issues[] / suggestions[]\n\n四维度：\n- _score_structure(soup): JSON-LD存在+15，每多一类型+3(上限+9)，语义标签+3，FAQ+2，参数表+1，满分30\n- _score_entity(soup): NER实体密度0-15，唯一标识度0-10，数值参数0-5，满分30\n- _score_semantic(soup): MVP版关键词覆盖率，满分25\n- _score_freshness(soup): 广告弹窗-5，无关外链过多-5，重复段落-5，满分15\n\n每个扣分项对应一条 issue + suggestion\n\n接口：\n- POST /api/detect/url：抓取URL的HTML，调用scorer，存 detect_records，返回报告\n- POST /api/detect/html：直接传HTML，调用scorer，存 detect_records\n- GET /api/detect/records：分页查询检测历史\n- GET /api/detect/records/{id}：单条完整报告",
+      "test": "对含 JSON-LD 的合法 HTML 打分，structure >= 15；对空 HTML 打分，total < 30，issues 非空；四维度之和等于 total；每条 issue 对应一条 suggestion",
+      "verifyCmd": "cd backend && python -m pytest tests/test_scorer.py -q",
+      "dependsOn": [
+        3
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "title": "Day5: 文本分片 + Embedding 向量化 + RAG 素材导出",
+      "spec": "实现 core/splitter.py 和 core/embedder.py：\n\ncore/splitter.py：\n- split(text, min_len=200, max_len=500) -> list[Chunk]\n- Chunk: {content, chunk_index, metadata:{title, entities, keywords, char_count}}\n- 按句子边界切割，不截断句子，每片绑定段落标题和 NER 实体\n\ncore/embedder.py：\n- embed(text) -> list[float]，embed_batch(texts) -> list[list[float]]\n- Redis 缓存：SHA-256(text) 为 key，TTL 7天，命中不调 API\n- 环境变量 EMBEDDING_PROVIDER 切换 openai / tongyi\n\n接口：\n- POST /api/vector/chunk：对 page_id 分片+向量化，写入 page_chunks\n- GET /api/vector/chunks/{page_id}：返回分片列表（不含向量）\n- GET /api/vector/export/{page_id}?format=json|csv：导出RAG素材包",
+      "test": "split(长文本) 每片在 200-500 字且不截断句子；embed(text) 返回长度 1536 的浮点列表；第二次 embed 同文本命中 Redis 缓存（不调外部API）；导出 JSON 包含 embedding 字段，CSV 可被 pandas 读取",
+      "verifyCmd": "cd backend && python -m pytest tests/test_splitter.py tests/test_embedder.py -q",
+      "dependsOn": [
+        4
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 6,
+      "title": "Day6: Vue3 前端 — 生成表单 + 检测报告页",
+      "spec": "搭建 Vue3 + Vite + Element Plus 管理后台（frontend/ 目录）：\n\n1. 初始化：vite + vue3 + element-plus + vue-router + pinia + axios\n\n2. 页面路由：\n   - /login：登录页，POST /api/auth/login，token 存 localStorage\n   - /generator：\n     * 实体类型下拉（Product/FAQPage/Article/HowTo/Organization）\n     * 动态字段表单（调 GET /api/geo/template 获取字段定义）\n     * 提交 POST /api/geo/generate，展示 HTML iframe 预览\n     * 下载按钮调 GET /api/geo/download/{id}\n   - /detector：\n     * 输入框支持 URL 或粘贴 HTML\n     * 提交后展示四维雷达图（ECharts）+ 分数条\n     * 问题列表 + 优化建议分组\n   - /history：生成历史 + 检测历史分 tab\n\n3. axios 拦截器：自动加 Authorization: Bearer {token}，401 跳登录，500 提示\n4. npm run build 产物在 frontend/dist/",
+      "test": "npm run build 无报错，dist/index.html 存在；/generator 页面有类型下拉和动态表单；/detector 页面有 URL 输入框和提交按钮；/history 页面有两个 tab",
+      "verifyCmd": "cd frontend && npm install --legacy-peer-deps && npm run build",
+      "dependsOn": [
+        5
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 7,
+      "title": "Day7: Docker Compose + Nginx 反代 + 联调",
+      "spec": "完成容器化部署：\n\n1. docker-compose.yml（根目录）：\n   - nginx：80端口，反代 /api/* -> api:8000，/* -> 静态文件\n   - api：FastAPI，gunicorn -w 4 -k uvicorn.workers.UvicornWorker\n   - postgres：PostgreSQL 16 + pgvector，数据卷持久化\n   - redis：Redis 7，设密码，仅内网可达\n   - 所有服务同一 bridge network\n\n2. nginx.conf：\n   - /api/ 反代到 api:8000，保留 /health\n   - /* 服务 frontend/dist（try_files $uri /index.html）\n   - gzip 压缩\n\n3. backend/Dockerfile：python:3.11-slim，非root用户，安装依赖，gunicorn 启动\n4. frontend/Dockerfile：node:20-alpine 构建，nginx:alpine 服务\n5. .env.example：DB_URL / REDIS_URL / JWT_SECRET / EMBEDDING_PROVIDER / EMBEDDING_API_KEY\n6. /docs 在生产模式 404",
+      "test": "docker compose config 无语法错误；backend/Dockerfile 存在且包含 gunicorn 启动命令；nginx.conf 包含 /api/ 反代规则；.env.example 包含所有必填变量",
+      "verifyCmd": "docker compose config -q && echo ok",
+      "dependsOn": [
+        6
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 8,
+      "title": "P1: 实体库管理（F5）",
+      "spec": "实现实体库 CRUD：\n\n后端（routers/entities.py）：\n- GET /api/entities：列表，支持 type/name 过滤，分页\n- POST /api/entities：新建，归属当前用户，按 type 做 Pydantic 字段校验\n- GET /api/entities/{id}：单条详情\n- PUT /api/entities/{id}：更新 fields，记录 updated_at\n- DELETE /api/entities/{id}：软删除（is_deleted=True）\n- POST /api/entities/{id}/use：返回该实体 fields，供生成表单回填\n\n前端 /entities 页面：\n- 实体列表按 type 分组，搜索框\n- 新建/编辑 Dialog（动态字段表单，复用 generator 组件）\n- 删除确认弹窗\n- 「使用此实体」跳转 /generator 并回填字段\n- /generator 页新增「从实体库选择」入口",
+      "test": "POST /api/entities 创建 Product 后 GET /api/entities 能查到；DELETE 后 GET 列表不再出现（软删）；PUT 更新 fields 后 GET 返回新值；软删除后 is_deleted=True 但数据库记录仍存在",
+      "verifyCmd": "cd backend && python -m pytest tests/test_entities.py -q",
+      "dependsOn": [
+        7
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 9,
+      "title": "P1: 站点爬虫批量检测（F6）",
+      "spec": "实现异步站点爬虫自检：\n\ncore/crawler.py：\n- async crawl_page(url) -> {url, html, status_code, links}\n- async crawl_site(site_url, max_pages=100) -> AsyncGenerator\n- 遵守 robots.txt（urllib.robotparser）\n- 请求间隔 1-2s 随机 + 随机 UA 池（10+）\n- aiohttp Semaphore 限并发 <=3\n- BFS 同域内链提取、去重\n\nCelery 任务（tasks/crawl_tasks.py）：\n- task_crawl_site(job_id, site_url, max_pages)\n- 写 crawl_pages + detect_records，实时更新 crawl_jobs.progress\n- 完成后汇总 result（avg_total / score_distribution / top_issues）\n\n接口：\n- POST /api/crawler/start：创建 crawl_jobs，派 Celery 任务，返回 job_id\n- GET /api/crawler/status/{job_id}：进度和状态\n- DELETE /api/crawler/stop/{job_id}：撤销任务，标 failed\n- GET /api/crawler/jobs：历史任务列表\n- GET /api/crawler/report/{job_id}：完整站点报告",
+      "test": "crawl_page 对真实 URL 返回 html 非空；robots.txt disallow 的路径被跳过；crawl_jobs 在任务开始后 status 变为 running；并发请求数不超过 3",
+      "verifyCmd": "cd backend && python -m pytest tests/test_crawler.py -q",
+      "dependsOn": [
+        7
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 10,
+      "title": "P1: 批量 GEO 文章生成（F4）",
+      "spec": "实现批量文章生成：\n\n接口：\n- POST /api/geo/batch：接收实体模板列表（最多50条），派 Celery 任务，返回 batch_id\n- GET /api/geo/batch/{batch_id}：查询批量任务进度（total/done/failed）\n\nCelery 任务 task_batch_generate(batch_id, items)：\n- 遍历每条 item，调用 LLM API 扩写实体字段为完整 GEO 文章\n- prompt：输入实体类型+字段，要求输出 FAQ/参数表/结构化段落\n- 调用 page_generator.build() 生成 HTML，存 geo_pages\n- 限速：asyncio.Semaphore，每秒最多 2 次 API 调用\n- 单条失败记录 error，不中断整批\n\n环境变量：LLM_PROVIDER（claude/openai）、LLM_API_KEY、LLM_MODEL\n\n前端 /generator 新增「批量生成」Tab：\n- CSV 上传（字段：type, name, fields_json）\n- 提交后轮询进度条",
+      "test": "单条 item 经 LLM 扩写后生成的 HTML 包含 JSON-LD 和 <article> 标签；POST /api/geo/batch 返回 batch_id；GET /api/geo/batch/{id} 返回 total/done/failed 字段；单条失败不影响其他条继续执行",
+      "verifyCmd": "cd backend && python -m pytest tests/test_batch_generate.py -q",
+      "dependsOn": [
+        9
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 11,
+      "title": "P2: 语义打分升级为 Embedding 余弦相似度",
+      "spec": "将 scorer.py 中简化版语义打分升级为 Embedding 余弦版本：\n\n1. _score_semantic(soup) 升级：\n   - 提取 <title>+<h1> 作为 query，提取正文段落作为 doc\n   - 调用 embedder.embed() 分别向量化\n   - numpy 计算余弦相似度，映射分数：\n     >= 0.85 -> 25，0.70-0.85 -> 20，0.50-0.70 -> 12，< 0.50 -> 5\n2. 降级策略：embedder 不可用时 fallback 关键词覆盖率版本（不报错）\n3. GET /api/detect/records/{id} 新增 semantic_method 字段（embedding/keyword）\n4. tests/test_scorer.py 新增 mock embedder 的语义分测试",
+      "test": "mock embed 余弦相似度 0.9 时 semantic=25；mock embed 余弦相似度 0.6 时 semantic=12；embedder 不可用时 fallback 不抛异常，仍返回 semantic 分；detect record 的 semantic_method 字段存在",
+      "verifyCmd": "cd backend && python -m pytest tests/test_scorer.py -q",
+      "dependsOn": [
+        5,
+        7
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 12,
+      "title": "P2: 私有化向量部署（bge-small-zh + FAISS）",
+      "spec": "实现本地离线 Embedding 方案：\n\ncore/embedder.py 新增 provider=local：\n- sentence-transformers 加载 BAAI/bge-small-zh-v1.5（约95MB）\n- BGE_MODEL_PATH 指定模型路径，首次调用自动下载\n- 向量维度 512（page_chunks 表支持 512/1536 两种维度）\n\ncore/faiss_index.py：\n- build_index(page_id_list)：从 page_chunks 加载向量，构建 IndexFlatIP\n- search(query_text, top_k=5) -> [{chunk_id, page_id, score, content}]\n- 索引持久化到 .faiss/geo.index\n\n新增接口：\n- POST /api/vector/search：query 文本 -> top-k 最相似分片\n- GET /api/vector/index/status：向量数 + 最后更新时间\n- POST /api/vector/index/rebuild：重建 FAISS 索引\n\ndocker-compose.yml 新增 local_embed profile（按需启用）",
+      "test": "EMBEDDING_PROVIDER=local 时 embed(text) 返回长度512向量；search(query) 返回 top_k 条结果且每条 score 在 0-1 之间；build_index 不报错且 .faiss/geo.index 文件被创建",
+      "verifyCmd": "cd backend && python -m pytest tests/test_embedder_local.py tests/test_faiss.py -q",
+      "dependsOn": [
+        5
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    },
+    {
+      "id": 13,
+      "title": "P3: 实体关系图谱可视化（ECharts）",
+      "spec": "实现实体关系图谱：\n\n后端 GET /api/entities/graph：\n- 从 page_chunks.metadata.entities 统计实体共现关系\n- 返回 {nodes:[{id,name,type,count}], edges:[{source,target,weight}]}\n- 支持按 page_id 过滤（可选 query param）\n\n前端 /graph 页面：\n- ECharts graph 力导向图\n- 节点大小按 count 缩放，颜色按 type 区分\n- 点击节点展示侧边栏（出现页面、相关参数）\n- 按实体类型过滤（checkbox 组）\n- 搜索高亮（输入实体名，图中对应节点高亮）\n- 导航栏新增「知识图谱」入口",
+      "test": "GET /api/entities/graph 返回 nodes 和 edges 数组；nodes 每项含 id/name/type/count；edges 每项含 source/target/weight；前端 /graph 路由存在且页面含 ECharts 组件",
+      "verifyCmd": "cd backend && python -m pytest tests/test_graph.py -q",
+      "dependsOn": [
+        11
+      ],
+      "review": false,
+      "status": "pending",
+      "agent": null,
+      "notes": [],
+      "createdAt": "2026-06-28T00:00:00.000Z",
+      "updatedAt": "2026-06-28T00:00:00.000Z"
+    }
+  ],
+  "nextId": 14
+}
