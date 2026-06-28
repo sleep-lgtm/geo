@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "task-board": {
+      "command": "node",
+      "args": ["/Users/gaode/harness/server.js"],
+      "env": {
+        "HARNESS_DEFAULT_PROJECT": "/Users/gaode/geo",
+        "HARNESS_IMPL_MODEL": "claude-opus-4-8",
+        "HARNESS_REVIEW_MODEL": "claude-opus-4-8",
+        "HARNESS_MAX_ATTEMPTS": "5",
+        "HARNESS_MAX_CONCURRENCY": "4"
+      }
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(node *)",
+      "Bash(npm *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(git *)"
+    ]
+  }
+}
